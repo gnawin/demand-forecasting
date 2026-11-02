@@ -1,0 +1,41 @@
+timezone: Europe/Amsterdam
+years: [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+held_out_years: null             # null means every eligible year
+resolution: auto                # auto, hourly, daily; no upsampling
+minimum_coverage: 0.90
+methods: [A1, B, C]              # add A* when external_profile is supplied
+processed_dir: data/processed
+results_dir: results             # outputs go into results/<carrier>/
+weather:
+  path: data/raw/knmi_uurgeg.txt  # KNMI hourly export (uurgegevens); may be a list
+  format: knmi                  # knmi or csv (timestamp_utc,temp_c,wind_ms,ghi_wm2)
+  stations: [260]                # equal-weight mean; e.g. [260, 240, 280, 380, 310, 290]
+carriers:
+  electricity:
+    demand:
+      path: data/raw/electricity.csv
+      format: csv               # csv, entsoe_csv, entsog_csv, entsoe_api
+      # For entsoe_csv set timestamp_column, value_column and timezone.
+      # entsoe_api uses ENTSOE_API_KEY and bidding_zone: NL.
+    units: MW
+    daily_start_hour: 0
+    daily_label: timestamp       # date: demand dates name local window starts
+    external_profile: null      # timestamp_utc,value CSV; all held-out years
+  heat:
+    demand:
+      path: data/raw/heat.csv
+      format: csv
+    units: MWh/day               # change to match the actual supplied values
+    daily_start_hour: 6
+    daily_label: date            # date D covers D 06:00 to D+1 06:00 local
+    external_profile: null
+cold_spells:
+  - {name: "2018 freeze", start: "2018-02-24", end: "2018-03-04"}
+  - {name: "2021 freeze", start: "2021-02-07", end: "2021-02-14"}
+boosting:
+  backend: sklearn              # sklearn (pinned, reproducible), lightgbm or auto
+  max_iter: 500
+  learning_rate: 0.05
+  patience: 30
+  threads: 2
+  random_seed: 42

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demand-validation"
+version = "0.1.0"
+description = "Held-out-year validation of weather-driven national demand profiles"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scikit-learn>=1.7",
+    "matplotlib>=3.8",
+    "PyYAML>=6.0",
+    "holidays>=0.60",
+    "pyarrow>=15",
+    "threadpoolctl>=3.5",
+]
+
+[project.optional-dependencies]
+entsoe = ["entsoe-py>=0.6"]
+lightgbm = ["lightgbm>=4.3"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
