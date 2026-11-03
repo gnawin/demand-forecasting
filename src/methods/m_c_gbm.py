@@ -34,7 +34,9 @@ class GradientBoosting(Method):
         train = train.dropna(subset="value")
         seed = int(self.settings.get("random_seed", 42))
         valid = split_days(train.index, self.timezone, seed)
-        x = train[GBM_FEATURES]
+        # TAC (NEDU profile temperature) is used when the weather reader provides it.
+        self.features = [c for c in GBM_FEATURES if c in train]
+        x = train[self.features]
         y = train["value"]
         backend = self.settings.get("backend", "auto")
         if backend not in {"auto", "lightgbm", "sklearn"}:
@@ -83,11 +85,11 @@ class GradientBoosting(Method):
         with threadpool_limits(limits=int(self.settings.get("threads", 2))):
             if self.backend == "sklearn" and self.prediction_iterations < self.model.n_iter_:
                 # Use the public staged API rather than mutating sklearn's private trees.
-                for iteration, values in enumerate(self.model.staged_predict(heldout_features[GBM_FEATURES]), start=1):
+                for iteration, values in enumerate(self.model.staged_predict(heldout_features[self.features]), start=1):
                     if iteration == self.prediction_iterations:
                         break
             else:
-                values = self.model.predict(heldout_features[GBM_FEATURES])
+                values = self.model.predict(heldout_features[self.features])
         if (values < 0).any():
             LOG.warning("C: clipping %d negative predictions to zero.", (values < 0).sum())
         return pd.Series(np.maximum(0, values), index=heldout_features.index, name=self.name)

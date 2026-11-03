@@ -210,8 +210,11 @@ overwrites. The generated demo uses the directory relative to its own config.
 
 - `tables/summary.csv`: one method per row, five headline groups (peak-week,
   measured-top-1%, annual mean, nRMSE, cold-spell mean); columns for mean,
-  worst and coldest year, **percentages** ready for a Result slide.
-  Signed relative errors are `(rebuilt - measured)/measured`. nRMSE is positive.
+  worst and coldest year, **percentages** ready for a Result slide. Peak-week,
+  measured-top-1% and cold-spell mean also include the mean absolute relative
+  error, so signed errors that cancel across years are visible. Annual-mean
+  error is zero by rescaling; nRMSE is already non-negative.
+  Signed relative errors are `(rebuilt - measured)/measured`.
 - `tables/summary_detailed.csv`, `tables/by_year.csv`: absolute errors in input
   units and relative fractions, timing shift, both top selections, cold-spell
   mean/peak, raw RMSE and nRMSE. Mean absolute errors are included alongside

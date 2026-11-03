@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import io
 import os
+import zipfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from .nedu import NEDU_STATION_WEIGHTS, old_tac, station_tac
 
 def utc_index(values: pd.Series, timezone: str | None = None) -> pd.DatetimeIndex:
     if pd.Timestamp(values.iloc[0]).tzinfo is None:
@@ -131,7 +133,16 @@ def validate_demand(series: pd.Series) -> pd.Series:
 
 
 def read_knmi(path: Path, stations: list[int] | None = None) -> pd.DataFrame:
-    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    if path.suffix.lower() == ".zip":
+        # KNMI downloads come as a zip holding one .txt.
+        with zipfile.ZipFile(path) as archive:
+            names = [n for n in archive.namelist() if n.lower().endswith(".txt")]
+            if len(names) != 1:
+                raise ValueError(f"{path}: expected one .txt inside, found {names}")
+            text = archive.read(names[0]).decode("utf-8-sig", errors="replace")
+    else:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    lines = text.splitlines()
     header_rows = [i for i, line in enumerate(lines) if line.lstrip("# ").startswith("STN,")]
     if not header_rows:
         raise ValueError(f"No '# STN,YYYYMMDD,HH,...' header in {path}")
@@ -158,23 +169,39 @@ def read_knmi(path: Path, stations: list[int] | None = None) -> pd.DataFrame:
         "wind_ms": frame["FH"].replace(-9999, np.nan).to_numpy() / 10,
         "ghi_wm2": frame["Q"].replace(-9999, np.nan).to_numpy() * 10000 / 3600,
     }, index=pd.DatetimeIndex(times, name="timestamp_utc"))
+    if "FF" in frame:
+        data["ff_ms"] = frame["FF"].replace(-9999, np.nan).to_numpy() / 10
     return data
 
 
+def station_weights(stations) -> dict[int, float] | None:
+    """stations: list (equal weights), mapping station -> weight, or 'nedu' for the NEDU TAC weights."""
+    if not stations:
+        return None
+    if stations == "nedu":
+        return dict(NEDU_STATION_WEIGHTS)
+    if isinstance(stations, dict):
+        return {int(k): float(v) for k, v in stations.items()}
+    return {int(s): 1.0 for s in stations}
+
+
 def read_weather(settings: dict, base: Path) -> pd.DataFrame:
+    """Hourly weather averaged over stations with weights, plus NEDU TAC (per station, then weighted)."""
     paths = settings["path"]
     if isinstance(paths, str):
         paths = [paths]
+    weights = station_weights(settings.get("stations"))
+    selected = list(weights) if weights else None
     parts = []
     for path in paths:
         if settings.get("format", "csv") == "knmi":
-            part = read_knmi(base / path, settings.get("stations"))
+            part = read_knmi(base / path, selected)
         elif settings.get("format", "csv") == "csv":
             frame = pd.read_csv(base / path)
             part = frame.set_index(utc_index(frame["timestamp_utc"]))
             part = part.drop(columns="timestamp_utc")
-            if "station" in part and settings.get("stations"):
-                part = part.loc[part["station"].isin(settings["stations"])]
+            if "station" in part and selected:
+                part = part.loc[part["station"].isin(selected)]
         else:
             raise ValueError("Weather format must be csv or knmi.")
         parts.append(part)
@@ -184,9 +211,35 @@ def read_weather(settings: dict, base: Path) -> pd.DataFrame:
             raise ValueError("Duplicate station/hour weather observations.")
     elif combined.index.has_duplicates:
         raise ValueError("Weather duplicates require a station column for explicit averaging.")
+    else:
+        combined["station"] = 0
     columns = ["temp_c", "wind_ms", "ghi_wm2"]
-    combined[columns] = combined[columns].apply(pd.to_numeric, errors="raise")
-    weather = combined[columns].groupby(level=0).mean().sort_index()
+    extra = ["ff_ms"] if "ff_ms" in combined else []
+    combined[columns + extra] = combined[columns + extra].apply(pd.to_numeric, errors="raise")
+    stations = sorted(combined["station"].unique())
+    if weights and set(stations) - set(weights) - {0}:
+        raise ValueError("Weather contains stations without a weight.")
+    per_station = {}
+    for station in stations:
+        frame = combined.loc[combined["station"].eq(station), columns + extra].sort_index()
+        frame = frame.reindex(pd.date_range(frame.index.min(), frame.index.max(), freq="h", name=frame.index.name))
+        frame["tac"] = station_tac(frame)
+        per_station[station] = frame
+    stacked = pd.concat(per_station, names=["station", "timestamp_utc"])
+    weight = stacked.index.get_level_values("station").map(lambda s: (weights or {}).get(s, 1.0))
+    weight = pd.Series(np.asarray(weight, dtype=float), index=stacked.index)
+    values = stacked[columns + ["tac"]]
+    # Weighted mean over the stations present in each hour; missing stations renormalise the weights.
+    present = values.notna().mul(weight, axis=0)
+    weather = (values.fillna(0).mul(weight, axis=0).groupby(level="timestamp_utc").sum()
+               / present.groupby(level="timestamp_utc").sum())
+    weather = weather.where(present.groupby(level="timestamp_utc").sum() > 0).sort_index()
+    # The pre-2016 TAC rule used De Bilt only.
+    reference = per_station.get(260, per_station[stations[0]] if len(stations) == 1 else None)
+    if reference is None:
+        reference = weather
+    weather["tac_old"] = old_tac(reference).reindex(weather.index)
+    weather.index.name = None
     if weather.empty or not np.isfinite(weather.dropna().to_numpy()).all():
         raise ValueError("Weather is empty or contains infinite values.")
     return weather

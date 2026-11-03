@@ -36,7 +36,7 @@ def aggregate(records: list[dict], coldest: int) -> tuple[pd.DataFrame, pd.DataF
 
 
 def compact_summary(summary: pd.DataFrame) -> pd.DataFrame:
-    # Keep the slide table to five metric groups; full absolute/relative detail is separate.
+    # Mean absolute error complements signed means for metrics where errors can cancel.
     compact = {"method": summary["method"]}
     headline = {
         "peak_week_error_pct": "peak_week_relative_error",
@@ -46,7 +46,11 @@ def compact_summary(summary: pd.DataFrame) -> pd.DataFrame:
         "cold_spell_mean_error_pct": "cold_spell_mean_relative_error",
     }
     for label, metric in headline.items():
-        for statistic in ("mean", "worst", "coldest_year"):
+        statistics = ("mean", "mean_absolute", "worst", "coldest_year") if metric in {
+            "peak_week_relative_error", "top_1pct_measured_relative_error",
+            "cold_spell_mean_relative_error",
+        } else ("mean", "worst", "coldest_year")
+        for statistic in statistics:
             compact[f"{label}_{statistic}"] = 100 * pd.to_numeric(summary[f"{metric}_{statistic}"])
     return pd.DataFrame(compact)
 

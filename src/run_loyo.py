@@ -23,13 +23,16 @@ from .methods.m_c_gbm import GradientBoosting
 from .methods.m_w_base import ExternalPlusBase
 from .methods.m_w_external import ExternalProfile
 from .metrics import evaluate
+from .nedu import nedu_daily
 from .report import write_report
 from .rescale import to_annual_total
 
 LOG = logging.getLogger(__name__)
-ALL_METHODS = ["A1", "A*", "A*b", "A*b22", "B", "B+W", "C"]
+ALL_METHODS = ["A1", "A*", "A*b", "A*b22", "B", "B+W", "C", "NEDU"]
 EXTERNAL_METHODS = {"A*", "A*b", "A*b22", "B+W"}
 FITTED_METHODS = {"A*b", "A*b22", "B", "B+W", "C"}
+# Unfitted profiles may leave intervals uncovered; the driver drops those for every method.
+PARTIAL_METHODS = EXTERNAL_METHODS | {"NEDU"}
 
 
 def run(config_path: Path, carrier: str, methods_override: list[str] | None = None) -> dict:
@@ -88,7 +91,8 @@ def run(config_path: Path, carrier: str, methods_override: list[str] | None = No
     heating_season = features.loc[np.isin(local_month, [1, 2, 3, 10, 11, 12])]
     temperatures = heating_season.groupby("year")["temp_c"].mean()
     coldest = int(temperatures.loc[heldout].idxmin())
-    names = methods_override if methods_override is not None else list(settings.get("methods", ["A1", "B", "C"]))
+    names = methods_override if methods_override is not None else list(
+        carrier_settings.get("methods", settings.get("methods", ["A1", "B", "C"])))
     external_settings = carrier_settings.get("external_profile")
     if external_settings and methods_override is None and "A*" not in names:
         names.append("A*")
@@ -124,12 +128,29 @@ def run(config_path: Path, carrier: str, methods_override: list[str] | None = No
         if set(names) <= EXTERNAL_METHODS:
             heldout = external_years
             coldest = int(temperatures.loc[heldout].idxmin())
+    nedu, nedu_years = None, []
+    if "NEDU" in names and methods_override is None and (not settings.get("nedu") or mode != "daily"):
+        LOG.warning("NEDU needs a 'nedu' section and daily data; skipping it for %s.", carrier)
+        names = [n for n in names if n != "NEDU"]
+    if "NEDU" in names:
+        if not settings.get("nedu"):
+            raise ValueError("Method NEDU requires a top-level 'nedu' section.")
+        if mode != "daily":
+            raise ValueError("Method NEDU is implemented for daily data only.")
+        nedu = nedu_daily(settings["nedu"], base, weather, timezone, start_hour)
+        covered_nedu = nedu.reindex(features.index).notna()
+        nedu_years = [y for y in heldout if covered_nedu[features["year"].eq(y)].mean() >= minimum]
+        if not nedu_years:
+            raise ValueError(f"NEDU profiles cover none of the held-out years {heldout}.")
+        if names == ["NEDU"]:
+            heldout = nedu_years
     records, predictions, support = [], {}, {}
     for year in heldout:
         # Fitted profile methods also need the profile in at least one training year.
         year_names = [
-            n for n in names if n not in EXTERNAL_METHODS
-            or (year in external_years and (n == "A*" or set(covered) - {year}))
+            n for n in names if (n not in EXTERNAL_METHODS
+            or (year in external_years and (n == "A*" or set(covered) - {year})))
+            and (n != "NEDU" or year in nedu_years)
         ]
         LOG.info("Reconstructing %s %d (%s; methods %s)", carrier, year, mode, ", ".join(year_names))
         train = features.loc[features["year"].ne(year)]
@@ -150,13 +171,15 @@ def run(config_path: Path, carrier: str, methods_override: list[str] | None = No
                 method = ExternalPlusBase()
             elif name == "A*b22":
                 method = ExternalPlusBase(crisis_year)
+            elif name == "NEDU":
+                method = ExternalProfile(nedu, "NEDU")
             else:
                 method = ExternalProfile(external)
             method.fit(train)
             pred = method.predict(inputs, float(measured.sum()))
             if not pred.index.equals(inputs.index):
                 raise ValueError(f"{name} returned mismatched prediction timestamps.")
-            if name not in EXTERNAL_METHODS and pred.isna().any():
+            if name not in PARTIAL_METHODS and pred.isna().any():
                 raise ValueError(f"{name} must predict every interval.")
             present = pred.dropna()
             if not np.isfinite(present).all() or (present < 0).any():
@@ -204,7 +227,7 @@ def run(config_path: Path, carrier: str, methods_override: list[str] | None = No
         "data_kind": settings.get("data_kind", "user-supplied; provenance must be verified"),
         "timezone": timezone, "daily_start_hour": start_hour, "coverage": coverage,
         "training_eligible_years": eligible, "held_out_years": heldout, "excluded_years": excluded,
-        "coldest_year": coldest, "external_profile_years": external_years,
+        "coldest_year": coldest, "external_profile_years": external_years, "nedu_years": nedu_years,
         "crisis_year": crisis_year, "common_support": support,
         "heating_season_mean_temp_c": {str(y): float(v) for y, v in temperatures.items()},
         "heating_season_definition": "Jan-Mar and Oct-Dec within each year",
@@ -212,7 +235,8 @@ def run(config_path: Path, carrier: str, methods_override: list[str] | None = No
         "relative_error_definition": "(predicted - measured) / measured; null if measured is zero",
         "worst_case_definition": "signed error with largest absolute magnitude; nRMSE uses maximum",
         "summary_percentages": True, "metrics_json_relative_errors_are_fractions": True,
-        "source": {"demand": carrier_settings["demand"], "weather": settings["weather"], "external_profile": external_settings},
+        "source": {"demand": carrier_settings["demand"], "weather": settings["weather"], "external_profile": external_settings,
+                   "nedu": settings.get("nedu") if nedu is not None else None},
         "boosting_settings": settings.get("boosting", {}),
         "versions": {"python": platform.python_version(), **{p: version(p) for p in ["pandas", "numpy", "scikit-learn", "holidays"]}},
         "compute_seconds_before_report": time.perf_counter() - started,

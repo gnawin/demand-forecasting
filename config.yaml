@@ -3,17 +3,28 @@ years: [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
 held_out_years: null             # null means every eligible year
 resolution: auto                # auto, hourly, daily; no upsampling
 minimum_coverage: 0.90
-methods: [A1, B, C]              # A* is added automatically when external_profile is set
+methods: [A1, NEDU, B, C]        # A* is added automatically when external_profile is set
                                  # backup (not used as results): A*b, A*b22, B+W
 crisis_year: 2022                # only used by backup method A*b22
 processed_dir: data/processed
 results_dir: results             # outputs go into results/<carrier>/
 weather:
-  path:                          # KNMI hourly exports (uurgegevens), as downloaded (.txt)
+  path:                          # KNMI hourly exports (uurgegevens), as downloaded (.txt or .zip)
     - data/raw/uurgeg_260_2011-2020.txt
     - data/raw/uurgeg_260_2021-2030.txt
+    - data/raw/uurgeg_290_2011-2020.zip
+    - data/raw/uurgeg_290_2021-2030.zip
+    - data/raw/uurgeg_380_2011-2020.zip
+    - data/raw/uurgeg_380_2021-2030.zip
+    - data/raw/uurgeg_235_2011-2020.zip
+    - data/raw/uurgeg_235_2021-2030.zip
+    - data/raw/uurgeg_280_2011-2020.zip
+    - data/raw/uurgeg_280_2021-2030.zip
+    - data/raw/uurgeg_310_2011-2020.zip
+    - data/raw/uurgeg_310_2021-2030.zip
   format: knmi                  # knmi or csv (timestamp_utc,temp_c,wind_ms,ghi_wm2)
-  stations: [260]                # equal-weight mean; e.g. [260, 240, 280, 380, 310, 290]
+  stations: nedu                 # NEDU TAC weights 260 .28, 290 .16, 380 .15, 235 .15, 280 .14, 310 .12;
+                                 # renormalised over the stations present in each hour
 carriers:
   electricity:
     demand:
@@ -34,22 +45,23 @@ carriers:
     units: GWh/d
     daily_start_hour: 6
     daily_label: date            # gas day D covers D 06:00 to D+1 06:00 local
-    external_profile:            # A*: WPG profile; runs only in the years it covers
-      path:                      # one WPG file per year
-        - data/raw/Warmteprofiel Eem en Zonnestein  2015.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2016.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2017.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2018.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2019.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2020.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2021.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2022.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2023.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2024.xlsx
-        - data/raw/Warmteprofiel Eem en Zonnestein  2025.xlsx
-      timestamp_column: time     # naive local time incl. DST
-      timezone: Europe/Amsterdam
-      value_columns: [Ruimteverwarming_W, Tapwater_W]   # summed; hourly W -> Wh per gas day
+    external_profile: null       # WPG (A*) dropped; see docs/results.md backup section
+  gas_total:                     # all Dutch gas: TOT = DIS + OTHER (IND and GPP are 0 for NL)
+    methods: [A1, B, C]          # no NEDU: NEDU profiles do not cover industry and power plants
+    demand:
+      path: data/raw/ENAGAD.csv
+      format: enagad
+      country: NL
+      column: TOT
+    units: GWh/d
+    daily_start_hour: 6
+    daily_label: date
+    external_profile: null
+nedu:                            # reference method NEDU: standard profiles, not fitted to demand
+  path: data/raw/Profielen-*.zip
+  weights: {G1A: 0.75, G2A: 0.25}  # annual-volume shares (NEDU annual reports 2016-2023);
+                                   # GXX: add a weight once its volume is known (profiles 2020+ only)
+  new_tac_from: 2016             # 2015 profiles use the old De Bilt rule T - W/1.5
 cold_spells:
   - {name: "2018 freeze", start: "2018-02-24", end: "2018-03-04"}
   - {name: "2021 freeze", start: "2021-02-07", end: "2021-02-14"}

@@ -32,4 +32,4 @@ def build_features(frame: pd.DataFrame, mode: str, timezone: str) -> pd.DataFram
 
 LINEAR_NUMERIC = ["heating", "heating_24h", "heating_72h", "cooling", "wind_ms", "wind_heating", "ghi_wm2", "holiday"]
 CATEGORICAL = ["hour_weekend", "month"]
-GBM_FEATURES = LINEAR_NUMERIC + CATEGORICAL + ["day_of_year", "temp_c", "weekday"]
+GBM_FEATURES = LINEAR_NUMERIC + CATEGORICAL + ["day_of_year", "temp_c", "weekday", "tac"]

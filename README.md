@@ -28,9 +28,10 @@ Put the files in `data/raw/`. File names and settings are in `config.yaml`.
 
 | File | Format | Notes |
 |---|---|---|
-| `ENAGAD.csv` | JRC ENaGaD daily gas demand, as downloaded | Measured heat demand: `NL`, column `DIS` (distribution grid, residential + commercial), GWh per gas day. Gas day D runs 06:00 to 06:00 the next day (local time). |
-| `Warmteprofiel *.xlsx` | WPG export: `time`, `Ruimteverwarming_W`, `Tapwater_W` (hourly, local time) | The profile to validate (A*), residential only. List one file per year under `external_profile.path`; A* is only scored in years a file covers. |
-| `uurgeg_260_*.txt` | KNMI hourly export (`uurgegevens`, the `.txt` as downloaded) with `T`, `FH`, `Q` | Hourly is fine: it is averaged to gas days automatically. List the files under `weather.path`; stations in `weather.stations` (default De Bilt, 260) are averaged. Cover up to 1 January after the last year. |
+| `ENAGAD.csv` | JRC ENaGaD daily gas demand, as downloaded | Measured demand, `NL`, GWh per gas day. Carrier `heat` uses column `DIS` (distribution grid, residential + commercial); carrier `gas_total` uses `TOT` (all gas). Gas day D runs 06:00 to 06:00 the next day (local time). |
+| `Profielen-*aardgas-*.zip` | Official Dutch standard gas profiles, zips as downloaded | Reference method `NEDU`: category weights under `nedu.weights` (default `G1A 0.75, G2A 0.25`; add `GXX` once its volume is known). |
+| `Warmteprofiel *.xlsx` | WPG export: `time`, `Ruimteverwarming_W`, `Tapwater_W` (hourly, local time) | Not used at the moment (see the backup section in `docs/results.md`). |
+| `uurgeg_<station>_*.txt` / `.zip` | KNMI hourly export (`uurgegevens`, the `.txt` or `.zip` as downloaded) with `T`, `FH`, `FF`, `Q` | Averaged to gas days automatically. List the files under `weather.path`. `weather.stations: nedu` uses the 6 official TAC stations and weights (260, 290, 380, 235, 280, 310), renormalised over the stations present. TAC is computed per station, then weighted. Cover up to 1 January after the last year. |
 | `electricity.csv` (optional) | `timestamp_utc,value` | Hourly, UTC, e.g. `2018-02-28T23:00:00Z,12345`. Test bench only. |
 
 Years with less than 90% data are skipped and listed in the output.
@@ -39,10 +40,10 @@ Years with less than 90% data are skipped and listed in the output.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1          # in each new terminal
-python -m src.run_loyo --config config.yaml --carrier heat
+python -m src.run_loyo --config config.yaml --carrier heat gas_total
 ```
 
-Use `--carrier electricity` for the test bench, or `--carrier electricity heat` for both.
+Use `--carrier electricity` for the test bench.
 
 ## Output
 
@@ -63,3 +64,6 @@ Written to `results/<carrier>/`:
 
 Data sources, methods, metrics, limitations and the synthetic demo:
 [docs/details.md](docs/details.md). Results so far: [docs/results.md](docs/results.md).
+Standard gas profiles vs learning, full method and numbers: [docs/technical_reference.md](docs/technical_reference.md);
+presentation (open in a browser): [docs/presentation/standard_profiles_vs_learning.html](docs/presentation/standard_profiles_vs_learning.html),
+technical appendix: [docs/presentation/standard_profiles_vs_learning_appendix.html](docs/presentation/standard_profiles_vs_learning_appendix.html).

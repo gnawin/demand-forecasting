@@ -6,8 +6,9 @@ from .base import Method
 class ExternalProfile(Method):
     name = "A*"
 
-    def __init__(self, profile: pd.Series):
+    def __init__(self, profile: pd.Series, name: str = "A*"):
         self.profile = profile
+        self.name = name
 
     def fit(self, train: pd.DataFrame) -> None:
         pass

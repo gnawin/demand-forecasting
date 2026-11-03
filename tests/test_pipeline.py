@@ -44,8 +44,12 @@ def test_complete_pipeline_outputs_support_and_no_leakage(tmp_path, monkeypatch,
     assert (tmp_path / "processed" / f"{carrier}.parquet").exists()
     summary = pd.read_csv(output / "tables" / "summary.csv")
     assert len(summary) == (4 if carrier == "electricity" else 3)
-    assert len(summary.columns) == 16
+    assert len(summary.columns) == 19
     assert np.max(summary["annual_mean_error_pct_mean"].abs()) < 1e-10
+    yearly = pd.read_csv(output / "tables" / "by_year.csv")
+    expected_peak_absolute = yearly.loc[yearly["method"].eq("C"), "peak_week_relative_error"].abs().mean() * 100
+    actual_peak_absolute = summary.loc[summary["method"].eq("C"), "peak_week_error_pct_mean_absolute"].iloc[0]
+    assert actual_peak_absolute == pytest.approx(expected_peak_absolute)
     for name in ("fig1_peak_week.png", "fig2_metric_bars.png", "fig3_annual_scatter.png", "fig4_loyo.png"):
         assert (output / "figures" / name).stat().st_size > 10000
     for year in (2018, 2019, 2020):
