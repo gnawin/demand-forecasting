@@ -1,13 +1,17 @@
 timezone: Europe/Amsterdam
-years: [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+years: [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
 held_out_years: null             # null means every eligible year
 resolution: auto                # auto, hourly, daily; no upsampling
 minimum_coverage: 0.90
-methods: [A1, B, C]              # add A* when external_profile is supplied
+methods: [A1, B, C]              # A* is added automatically when external_profile is set
+                                 # backup (not used as results): A*b, A*b22, B+W
+crisis_year: 2022                # only used by backup method A*b22
 processed_dir: data/processed
 results_dir: results             # outputs go into results/<carrier>/
 weather:
-  path: data/raw/knmi_uurgeg.txt  # KNMI hourly export (uurgegevens); may be a list
+  path:                          # KNMI hourly exports (uurgegevens), as downloaded (.txt)
+    - data/raw/uurgeg_260_2011-2020.txt
+    - data/raw/uurgeg_260_2021-2030.txt
   format: knmi                  # knmi or csv (timestamp_utc,temp_c,wind_ms,ghi_wm2)
   stations: [260]                # equal-weight mean; e.g. [260, 240, 280, 380, 310, 290]
 carriers:
@@ -20,15 +24,32 @@ carriers:
     units: MW
     daily_start_hour: 0
     daily_label: timestamp       # date: demand dates name local window starts
-    external_profile: null      # timestamp_utc,value CSV; all held-out years
+    external_profile: null      # CSV path or mapping like carriers.heat.external_profile
   heat:
     demand:
-      path: data/raw/heat.csv
-      format: csv
-    units: MWh/day               # change to match the actual supplied values
+      path: data/raw/ENAGAD.csv  # JRC ENaGaD daily gas demand, GWh/d per gas day
+      format: enagad
+      country: NL
+      column: DIS                # distribution grid: residential + commercial
+    units: GWh/d
     daily_start_hour: 6
-    daily_label: date            # date D covers D 06:00 to D+1 06:00 local
-    external_profile: null
+    daily_label: date            # gas day D covers D 06:00 to D+1 06:00 local
+    external_profile:            # A*: WPG profile; runs only in the years it covers
+      path:                      # one WPG file per year
+        - data/raw/Warmteprofiel Eem en Zonnestein  2015.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2016.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2017.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2018.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2019.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2020.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2021.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2022.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2023.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2024.xlsx
+        - data/raw/Warmteprofiel Eem en Zonnestein  2025.xlsx
+      timestamp_column: time     # naive local time incl. DST
+      timezone: Europe/Amsterdam
+      value_columns: [Ruimteverwarming_W, Tapwater_W]   # summed; hourly W -> Wh per gas day
 cold_spells:
   - {name: "2018 freeze", start: "2018-02-24", end: "2018-03-04"}
   - {name: "2021 freeze", start: "2021-02-07", end: "2021-02-14"}

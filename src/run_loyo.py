@@ -14,18 +14,22 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from .align import align_data
+from .align import align_data, detect_resolution, sum_complete_days
 from .features import build_features
-from .ingest import read_demand, read_weather
+from .ingest import read_demand, read_profile, read_weather
 from .methods.m_a_reference_year import ReferenceYear
-from .methods.m_b_regression import Regression
+from .methods.m_b_regression import Regression, RegressionWithProfile
 from .methods.m_c_gbm import GradientBoosting
+from .methods.m_w_base import ExternalPlusBase
 from .methods.m_w_external import ExternalProfile
 from .metrics import evaluate
 from .report import write_report
 from .rescale import to_annual_total
 
 LOG = logging.getLogger(__name__)
+ALL_METHODS = ["A1", "A*", "A*b", "A*b22", "B", "B+W", "C"]
+EXTERNAL_METHODS = {"A*", "A*b", "A*b22", "B+W"}
+FITTED_METHODS = {"A*b", "A*b22", "B", "B+W", "C"}
 
 
 def run(config_path: Path, carrier: str, methods_override: list[str] | None = None) -> dict:
@@ -85,58 +89,101 @@ def run(config_path: Path, carrier: str, methods_override: list[str] | None = No
     temperatures = heating_season.groupby("year")["temp_c"].mean()
     coldest = int(temperatures.loc[heldout].idxmin())
     names = methods_override if methods_override is not None else list(settings.get("methods", ["A1", "B", "C"]))
-    external_path = carrier_settings.get("external_profile")
-    if external_path and methods_override is None and "A*" not in names:
+    external_settings = carrier_settings.get("external_profile")
+    if external_settings and methods_override is None and "A*" not in names:
         names.append("A*")
-    if not names or len(set(names)) != len(names) or set(names) - {"A1", "A*", "B", "C"}:
-        raise ValueError("Select unique methods from A1, A*, B, C.")
-    external = None
-    if "A*" in names:
-        if not external_path:
-            raise ValueError("A* requires carriers.<carrier>.external_profile.")
-        external = read_demand(
-            {"path": external_path}, base, daily_label=label, daily_start_hour=start_hour,
-            timezone=timezone, years=years,
-        )
-    records, predictions = [], {}
+    if not external_settings and methods_override is None and set(names) & EXTERNAL_METHODS:
+        LOG.warning("No external_profile for %s; skipping %s.", carrier, sorted(set(names) & EXTERNAL_METHODS))
+        names = [n for n in names if n not in EXTERNAL_METHODS]
+    if not names or len(set(names)) != len(names) or set(names) - set(ALL_METHODS):
+        raise ValueError(f"Select unique methods from {', '.join(ALL_METHODS)}.")
+    crisis_year = int(settings.get("crisis_year", 2022))
+    external, external_years, covered, external_minimum = None, [], [], minimum
+    if set(names) & EXTERNAL_METHODS:
+        if not external_settings:
+            raise ValueError(f"{sorted(set(names) & EXTERNAL_METHODS)} require carriers.<carrier>.external_profile.")
+        if isinstance(external_settings, str):
+            external = read_demand(
+                {"path": external_settings}, base, daily_label=label, daily_start_hour=start_hour,
+                timezone=timezone, years=years,
+            )
+        else:
+            external = read_profile(external_settings, base)
+            external_minimum = float(external_settings.get("minimum_coverage", minimum))
+            if mode == "daily" and detect_resolution(external.index) == "hourly":
+                external = sum_complete_days(external, timezone, start_hour)
+        # The profile is a weather-driven input, never measured demand, so it may be used as a feature.
+        features["wpg"] = external.reindex(features.index)
+        covered = [
+            year for year in eligible
+            if features.loc[features["year"].eq(year), "wpg"].notna().mean() >= external_minimum
+        ]
+        external_years = [year for year in heldout if year in covered]
+        if not external_years:
+            raise ValueError(f"External profile covers none of the held-out years {heldout}.")
+        if set(names) <= EXTERNAL_METHODS:
+            heldout = external_years
+            coldest = int(temperatures.loc[heldout].idxmin())
+    records, predictions, support = [], {}, {}
     for year in heldout:
-        LOG.info("Reconstructing %s %d (%s; methods %s)", carrier, year, mode, ", ".join(names))
+        # Fitted profile methods also need the profile in at least one training year.
+        year_names = [
+            n for n in names if n not in EXTERNAL_METHODS
+            or (year in external_years and (n == "A*" or set(covered) - {year}))
+        ]
+        LOG.info("Reconstructing %s %d (%s; methods %s)", carrier, year, mode, ", ".join(year_names))
         train = features.loc[features["year"].ne(year)]
         test = features.loc[features["year"].eq(year)]
         inputs = test.drop(columns="value")
         measured = test["value"]
-        annual_total = float(measured.sum())
         raw, method_metadata = {}, {}
-        for name in names:
+        for name in year_names:
             if name == "A1":
                 method = ReferenceYear(timezone)
             elif name == "B":
                 method = Regression()
+            elif name == "B+W":
+                method = RegressionWithProfile()
             elif name == "C":
                 method = GradientBoosting(settings.get("boosting"), timezone)
+            elif name == "A*b":
+                method = ExternalPlusBase()
+            elif name == "A*b22":
+                method = ExternalPlusBase(crisis_year)
             else:
                 method = ExternalProfile(external)
             method.fit(train)
-            pred = method.predict(inputs, annual_total)
+            pred = method.predict(inputs, float(measured.sum()))
             if not pred.index.equals(inputs.index):
                 raise ValueError(f"{name} returned mismatched prediction timestamps.")
-            if pred.isna().any() or not np.isfinite(pred).all() or (pred < 0).any():
-                raise ValueError(f"{name} must return finite non-negative predictions for every interval.")
+            if name not in EXTERNAL_METHODS and pred.isna().any():
+                raise ValueError(f"{name} must predict every interval.")
+            present = pred.dropna()
+            if not np.isfinite(present).all() or (present < 0).any():
+                raise ValueError(f"{name} must return finite non-negative predictions.")
             raw[name] = pred
             method_metadata[name] = getattr(method, "metadata", {})
             if name == "A1":
                 method_metadata[name] = {"reference_year": method.reference_year}
-        # All models predict every interval; only unavailable measurements restrict support.
+        # Every method is scored on the same intervals: measured and, in A* years, covered by the profile.
         valid = measured.notna()
+        for pred in raw.values():
+            valid &= pred.notna()
+        support[str(year)] = {
+            "measured_intervals": int(measured.notna().sum()),
+            "common_support_intervals": int(valid.sum()),
+            "dropped_intervals": [t.isoformat() for t in measured.index[measured.notna() & ~valid]],
+        }
         observed = measured.where(valid)
+        annual_total = float(observed.sum())
         frame = pd.DataFrame({"measured": observed})
-        for name in names:
+        for name in year_names:
             supported = raw[name].where(valid)
             rebuilt = to_annual_total(supported, annual_total)
             if not np.isclose(rebuilt.sum(), annual_total, rtol=1e-10):
                 raise AssertionError("Annual-total rescaling failed.")
             level = None
-            if name in {"B", "C"}:
+            if name in FITTED_METHODS:
                 unscaled_total = float(supported.sum())
                 level = {
                     "predicted_total": unscaled_total, "measured_total": annual_total,
@@ -157,14 +204,15 @@ def run(config_path: Path, carrier: str, methods_override: list[str] | None = No
         "data_kind": settings.get("data_kind", "user-supplied; provenance must be verified"),
         "timezone": timezone, "daily_start_hour": start_hour, "coverage": coverage,
         "training_eligible_years": eligible, "held_out_years": heldout, "excluded_years": excluded,
-        "coldest_year": coldest,
+        "coldest_year": coldest, "external_profile_years": external_years,
+        "crisis_year": crisis_year, "common_support": support,
         "heating_season_mean_temp_c": {str(y): float(v) for y, v in temperatures.items()},
         "heating_season_definition": "Jan-Mar and Oct-Dec within each year",
-        "annual_total_definition": "sum of available measurements after short-gap interpolation; identical support for every method",
+        "annual_total_definition": "sum of measurements on the common support (measured and, in A* years, covered by the external profile); identical for every method",
         "relative_error_definition": "(predicted - measured) / measured; null if measured is zero",
         "worst_case_definition": "signed error with largest absolute magnitude; nRMSE uses maximum",
         "summary_percentages": True, "metrics_json_relative_errors_are_fractions": True,
-        "source": {"demand": carrier_settings["demand"], "weather": settings["weather"], "external_profile": external_path},
+        "source": {"demand": carrier_settings["demand"], "weather": settings["weather"], "external_profile": external_settings},
         "boosting_settings": settings.get("boosting", {}),
         "versions": {"python": platform.python_version(), **{p: version(p) for p in ["pandas", "numpy", "scikit-learn", "holidays"]}},
         "compute_seconds_before_report": time.perf_counter() - started,
@@ -184,7 +232,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument("--carrier", nargs="+", required=True, help="One or more carrier names, or 'all'.")
-    parser.add_argument("--methods", nargs="+", choices=["A1", "A*", "B", "C"], help="Override configured methods.")
+    parser.add_argument("--methods", nargs="+", choices=ALL_METHODS, help="Override configured methods.")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     carriers = args.carrier

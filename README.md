@@ -28,8 +28,9 @@ Put the files in `data/raw/`. File names and settings are in `config.yaml`.
 
 | File | Format | Notes |
 |---|---|---|
-| `heat.csv` | `timestamp_utc,value` | One row per gas day, e.g. `2018-02-28,123456`. Gas day D runs 06:00 to 06:00 the next day (local time). Set `units` in `config.yaml`. |
-| `knmi_uurgeg.txt` | KNMI hourly export (`uurgegevens`) with `T`, `FH`, `Q` | Hourly is fine: it is averaged to gas days automatically. Stations listed in `weather.stations` (default De Bilt, 260) are averaged. Cover up to 1 January after the last year. |
+| `ENAGAD.csv` | JRC ENaGaD daily gas demand, as downloaded | Measured heat demand: `NL`, column `DIS` (distribution grid, residential + commercial), GWh per gas day. Gas day D runs 06:00 to 06:00 the next day (local time). |
+| `Warmteprofiel *.xlsx` | WPG export: `time`, `Ruimteverwarming_W`, `Tapwater_W` (hourly, local time) | The profile to validate (A*), residential only. List one file per year under `external_profile.path`; A* is only scored in years a file covers. |
+| `uurgeg_260_*.txt` | KNMI hourly export (`uurgegevens`, the `.txt` as downloaded) with `T`, `FH`, `Q` | Hourly is fine: it is averaged to gas days automatically. List the files under `weather.path`; stations in `weather.stations` (default De Bilt, 260) are averaged. Cover up to 1 January after the last year. |
 | `electricity.csv` (optional) | `timestamp_utc,value` | Hourly, UTC, e.g. `2018-02-28T23:00:00Z,12345`. Test bench only. |
 
 Years with less than 90% data are skipped and listed in the output.
@@ -54,9 +55,11 @@ Written to `results/<carrier>/`:
 | `figures/fig2_metric_bars.png` | Peak-week and top-1% errors per method |
 | `figures/fig3_annual_scatter.png` | Measured vs. rebuilt, coldest year |
 | `figures/fig4_loyo.png` | Peak-week error per year |
+| `figures/fig5_external_<year>.png` | Per WPG year: measured vs. A* and the models, full year and peak week |
+| `tables/summary_external_years.csv` | Like `summary.csv`, but only the WPG years, so A* is compared like-for-like |
 | `metrics.json` | All numbers, data coverage and included/excluded years |
 
 ## More
 
 Data sources, methods, metrics, limitations and the synthetic demo:
-[docs/details.md](docs/details.md).
+[docs/details.md](docs/details.md). Results so far: [docs/results.md](docs/results.md).

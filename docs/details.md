@@ -74,12 +74,27 @@ Set the units in the carrier configuration; heat's default is only a placeholder
   Distribution includes small non-residential users, cooking and hot water;
   interpret this as **gas demand of the built environment**, not isolated
   space-heating or residential-only demand.
-- **A***: set `carriers.<name>.external_profile` to the department/WPG CSV.
+- **Heat (used)**: JRC ENaGaD daily gas demand (`format: enagad`, `country: NL`,
+  `column: DIS`), GWh per gas day. `DIS` is distribution-grid demand:
+  residential **and** commercial, cooking and hot water. Note the structural
+  drop from 2022 (gas crisis): ~180 TWh/yr before, ~135 TWh/yr after.
+- **A***: set `carriers.<name>.external_profile` to the department/WPG profile:
+  either a canonical `timestamp_utc,value` CSV path, or a mapping with `path`
+  (list of CSV/xlsx files), `timestamp_column`, `timezone` (for naive local
+  time incl. DST) and `value_columns` (summed). Hourly power in daily mode is
+  summed to energy per gas day (23/25-hour DST days included); incomplete gas
+  days are dropped.
   It is enabled automatically unless `--methods` explicitly overrides selection.
-  It must cover every evaluated timestamp with finite values; mismatches error.
+  A* is only run in held-out years the profile covers for at least
+  `minimum_coverage`. In those years every method is scored on the same common
+  support (measured and covered by A*); dropped intervals are listed under
+  `common_support` in `metrics.json`. `summary_external_years.csv` and
+  `fig5_external_<year>.png` compare all methods in just those years.
   It is normalized identically to all other methods. A supplied profile must
   itself satisfy the held-out-input contract; the pipeline cannot audit its
-  provenance.
+  provenance. A residential-only profile (WPG) has no space heating in summer,
+  whereas `DIS` keeps a commercial/cooking base, so A* misses the summer base
+  and, after rescaling to the annual total, overshoots winter.
 
 Daily gas date D denotes D **06:00 local** to D+1 **06:00 local**. For date
 labels set `daily_label: date` and `daily_start_hour: 6` (heat defaults).
@@ -163,6 +178,24 @@ gaps; longer gaps or incomplete daily windows error in eligible years.
 - **A***: externally supplied reference/WPG profile, no fit; identical
   annual-total scaling and metrics. The key real-world comparison to use when
   the department profile is available.
+- **Backup, not used as results** (see `docs/results.md`, "Backup"). Off by
+  default; enable by adding them to `methods:`.
+- **A\*b** (WPG + base): ordinary least squares fitted on the training years only,
+  `measured ≈ a·WPG + b + c·weekend + e·holiday`. *b* is a constant base (all
+  demand WPG does not explain: commercial, cooking, other); *c*, *e* capture
+  calendar effects of commercial use. It is a fitted constant, not a separate
+  commercial profile. WPG is divided by its training mean before the fit
+  (unscaled ~1e7 Wh values made the solver drop the 0/1 columns). Coefficients
+  and the base share (b / mean training demand) are in `metrics.json`.
+- **A\*b22**: as A\*b, plus a post-crisis indicator (`year >= crisis_year`,
+  default 2022) and its interaction with WPG, so both *b* and *a* may change
+  from 2022.
+- **B+W**: B with the WPG gas-day energy as one extra standardized numeric
+  input. Tests whether WPG adds information beyond the weather features.
+- Methods needing WPG run only in years it covers (A\*b, A\*b22 and B+W also
+  need it in at least one training year) and are skipped with a warning for a
+  carrier without `external_profile`. Before rescaling, their annual levels are
+  in `unrescaled_level.csv`, like B and C.
 
 B/C negative predictions are explicitly logged and clipped to zero before
 normalization; unrescaled annual level errors refer to these physical,

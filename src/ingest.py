@@ -55,11 +55,15 @@ def read_demand(
             raise ValueError("Conflicting ENTSO-E values at duplicate API interval boundaries.")
         result = result[~result.index.duplicated()].sort_index()
         return validate_demand(result)
-    if kind not in {"csv", "entsoe_csv", "entsog_csv"}:
+    if kind == "enagad":
+        frame = read_enagad(base / settings["path"], settings.get("country", "NL"), settings.get("column", "DIS"))
+        timestamp, value = "GASDAY", "value"
+    elif kind in {"csv", "entsoe_csv", "entsog_csv"}:
+        frame = pd.read_csv(base / settings["path"], sep=settings.get("separator", ","))
+        timestamp = settings.get("timestamp_column", "timestamp_utc")
+        value = settings.get("value_column", "value")
+    else:
         raise ValueError(f"Unknown demand format: {kind}")
-    frame = pd.read_csv(base / settings["path"], sep=settings.get("separator", ","))
-    timestamp = settings.get("timestamp_column", "timestamp_utc")
-    value = settings.get("value_column", "value")
     if daily_label not in {"date", "timestamp"}:
         raise ValueError("daily_label must be 'timestamp' or 'date'.")
     parsed_utc = pd.to_datetime(frame[timestamp], format="mixed", utc=True)
@@ -76,6 +80,44 @@ def read_demand(
     return validate_demand(pd.Series(pd.to_numeric(frame[value], errors="raise").to_numpy(), index=index))
 
 
+def read_enagad(path: Path, country: str, column: str) -> pd.DataFrame:
+    """JRC ENaGaD daily gas table: '#' comment header, one row per gas day and country, ';' line ends."""
+    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    header = next((i for i, line in enumerate(lines) if line.startswith("GASDAY,")), None)
+    if header is None:
+        raise ValueError(f"No 'GASDAY,COUNTRY,...' header in {path}")
+    body = "\n".join(line.rstrip().rstrip(";") for line in lines[header:] if line.strip(" ;"))
+    frame = pd.read_csv(io.StringIO(body), na_values=["NA"])
+    if column not in frame:
+        raise ValueError(f"ENaGaD column {column!r} not found; available: {list(frame.columns)}")
+    frame = frame.loc[frame["COUNTRY"].eq(country), ["GASDAY", column]]
+    if frame.empty:
+        raise ValueError(f"No ENaGaD rows for country {country!r}")
+    return frame.rename(columns={column: "value"}).reset_index(drop=True)
+
+
+def read_profile(settings: dict | str, base: Path) -> pd.Series:
+    """External profile (e.g. WPG): canonical CSV, or CSV/Excel with naive local timestamps and value columns that are summed."""
+    if isinstance(settings, str):
+        settings = {"path": settings}
+    paths = settings["path"] if isinstance(settings["path"], list) else [settings["path"]]
+    timestamp = settings.get("timestamp_column", "timestamp_utc")
+    columns = settings.get("value_columns", ["value"])
+    parts = []
+    for path in paths:
+        if Path(path).suffix.lower() in {".xlsx", ".xls"}:
+            frame = pd.read_excel(base / path, sheet_name=settings.get("sheet", 0))
+        else:
+            frame = pd.read_csv(base / path)
+        missing = set(columns + [timestamp]) - set(frame.columns)
+        if missing:
+            raise ValueError(f"{path}: missing columns {sorted(missing)}; available {list(frame.columns)}")
+        values = frame[columns].apply(pd.to_numeric, errors="raise").sum(axis=1, min_count=len(columns))
+        index = utc_index(frame[timestamp], settings.get("timezone"))
+        parts.append(pd.Series(values.to_numpy(), index=index))
+    return validate_demand(pd.concat(parts))
+
+
 def validate_demand(series: pd.Series) -> pd.Series:
     series = series.astype(float).sort_index().rename("value")
     if series.index.has_duplicates:
@@ -89,12 +131,15 @@ def validate_demand(series: pd.Series) -> pd.Series:
 
 
 def read_knmi(path: Path, stations: list[int] | None = None) -> pd.DataFrame:
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
-    headers = [line.lstrip("# ").strip() for line in lines if line.lstrip("# ").startswith("STN,")]
-    if not headers:
+    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    header_rows = [i for i, line in enumerate(lines) if line.lstrip("# ").startswith("STN,")]
+    if not header_rows:
         raise ValueError(f"No '# STN,YYYYMMDD,HH,...' header in {path}")
-    names = [name.strip() for name in headers[-1].split(",")]
-    body = "\n".join(line for line in lines if line.strip() and not line.lstrip().startswith("#"))
+    names = [name.strip() for name in lines[header_rows[-1]].lstrip("# ").split(",")]
+    # Station downloads put an uncommented legend above the header; data follow it.
+    body = "\n".join(
+        line for line in lines[header_rows[-1] + 1:] if line.strip() and not line.lstrip().startswith("#")
+    )
     frame = pd.read_csv(io.StringIO(body), names=names, skipinitialspace=True, na_values=["", " "])
     required = {"STN", "YYYYMMDD", "HH", "T", "FH", "Q"}
     if not required.issubset(frame):

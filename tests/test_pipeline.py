@@ -59,6 +59,64 @@ def test_complete_pipeline_outputs_support_and_no_leakage(tmp_path, monkeypatch,
             assert record["unrescaled_level"] is not None
 
 
+def test_external_profile_partial_years_common_support(tmp_path):
+    path = generate(tmp_path, 2018, 2020)
+    config = yaml.safe_load(path.read_text())
+    config["boosting"]["max_iter"] = 20
+    local = pd.date_range("2019-01-01", "2020-01-01", freq="h", tz="Europe/Amsterdam", inclusive="left")
+    rng = np.random.default_rng(0)
+    pd.DataFrame({"time": local.tz_localize(None), "Ruimteverwarming_W": rng.uniform(1, 5, len(local)),
+                  "Tapwater_W": 1.0}).to_excel(tmp_path / "wpg 2019.xlsx", index=False)
+    config["carriers"]["heat"]["external_profile"] = {
+        "path": ["wpg 2019.xlsx"], "timestamp_column": "time", "timezone": "Europe/Amsterdam",
+        "value_columns": ["Ruimteverwarming_W", "Tapwater_W"],
+    }
+    path.write_text(yaml.safe_dump(config))
+    payload = run(path, "heat")
+    metadata = payload["metadata"]
+    assert metadata["external_profile_years"] == [2019]
+    assert {r["year"] for r in payload["runs"] if r["method"] == "A*"} == {2019}
+    # The last 2019 gas day ends 2020-01-01 06:00, beyond the profile, so all methods drop it.
+    assert metadata["common_support"]["2019"]["dropped_intervals"] == ["2019-12-31T05:00:00+00:00"]
+    assert metadata["common_support"]["2018"]["dropped_intervals"] == []
+    output = tmp_path / "results" / "heat"
+    frame = pd.read_parquet(output / "predictions" / "2019.parquet")
+    for column in ("A1", "B", "C", "A*"):
+        assert frame[column].notna().equals(frame["measured"].notna())
+        assert frame[column].sum() == pytest.approx(frame["measured"].sum(), rel=1e-12)
+    assert len(pd.read_csv(output / "tables" / "summary_external_years.csv")) == 4
+    assert (output / "figures" / "fig5_external_2019.png").stat().st_size > 10000
+
+
+def test_fitted_profile_methods_and_scale_robust_base(tmp_path):
+    path = generate(tmp_path, 2018, 2020)
+    config = yaml.safe_load(path.read_text())
+    config["boosting"]["max_iter"] = 20
+    config["methods"] = ["B", "A*b", "A*b22", "B+W"]
+    config["crisis_year"] = 2020
+    weather = pd.read_csv(tmp_path / "weather.csv", parse_dates=["timestamp_utc"])
+    # Weather-driven stand-in profile in Wh (~1e6), as large as real WPG values.
+    profile = pd.DataFrame({"timestamp_utc": weather["timestamp_utc"].dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "value": 1e6 * (1 + (15.5 - weather["temp_c"]).clip(lower=0))})
+    profile.to_csv(tmp_path / "wpg.csv", index=False)
+    config["carriers"]["heat"]["external_profile"] = {"path": ["wpg.csv"]}
+    path.write_text(yaml.safe_dump(config))
+    payload = run(path, "heat")
+    methods = {(r["year"], r["method"]) for r in payload["runs"]}
+    assert {m for _, m in methods} == {"B", "A*b", "A*b22", "B+W", "A*"}
+    for record in payload["runs"]:
+        if record["method"] in {"A*b", "A*b22"}:
+            # With the scale bug, 0/1 calendar columns came out at ~1e-15 regardless of the data.
+            assert abs(record["model"]["weekend"]) > 1e-6
+            assert record["unrescaled_level"] is not None
+    output = tmp_path / "results" / "heat"
+    for year in (2018, 2019, 2020):
+        frame = pd.read_parquet(output / "predictions" / f"{year}.parquet")
+        for column in ("A*b", "A*b22", "B+W"):
+            assert frame[column].sum() == pytest.approx(frame["measured"].sum(), rel=1e-12)
+    assert (output / "figures" / "fig5_external_2019.png").exists()
+
+
 def test_low_coverage_excluded_even_when_requested_and_weather_error(tmp_path):
     path = generate(tmp_path, 2018, 2020)
     config = yaml.safe_load(path.read_text())

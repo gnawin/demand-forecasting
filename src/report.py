@@ -35,14 +35,7 @@ def aggregate(records: list[dict], coldest: int) -> tuple[pd.DataFrame, pd.DataF
     return pd.DataFrame(rows), yearly, structured
 
 
-def write_report(
-    output: Path, records: list[dict], metadata: dict, predictions: dict[int, pd.DataFrame],
-) -> dict:
-    tables = output / "tables"
-    tables.mkdir(parents=True, exist_ok=True)
-    summary, yearly, aggregated = aggregate(records, metadata["coldest_year"])
-    yearly.to_csv(tables / "by_year.csv", index=False)
-    summary.to_csv(tables / "summary_detailed.csv", index=False)
+def compact_summary(summary: pd.DataFrame) -> pd.DataFrame:
     # Keep the slide table to five metric groups; full absolute/relative detail is separate.
     compact = {"method": summary["method"]}
     headline = {
@@ -55,7 +48,26 @@ def write_report(
     for label, metric in headline.items():
         for statistic in ("mean", "worst", "coldest_year"):
             compact[f"{label}_{statistic}"] = 100 * pd.to_numeric(summary[f"{metric}_{statistic}"])
-    pd.DataFrame(compact).to_csv(tables / "summary.csv", index=False)
+    return pd.DataFrame(compact)
+
+
+def write_report(
+    output: Path, records: list[dict], metadata: dict, predictions: dict[int, pd.DataFrame],
+) -> dict:
+    tables = output / "tables"
+    tables.mkdir(parents=True, exist_ok=True)
+    summary, yearly, aggregated = aggregate(records, metadata["coldest_year"])
+    yearly.to_csv(tables / "by_year.csv", index=False)
+    summary.to_csv(tables / "summary_detailed.csv", index=False)
+    compact_summary(summary).to_csv(tables / "summary.csv", index=False)
+    external_years = metadata.get("external_profile_years") or []
+    partial_external = bool(external_years) and set(external_years) != set(predictions)
+    if partial_external:
+        # Like-for-like: every method only in the years the external profile covers.
+        subset = [r for r in records if r["year"] in external_years]
+        temps = metadata["heating_season_mean_temp_c"]
+        external_summary, _, _ = aggregate(subset, min(external_years, key=lambda y: temps[str(y)]))
+        compact_summary(external_summary).to_csv(tables / "summary_external_years.csv", index=False)
     pd.DataFrame(metadata["coverage"]).to_csv(tables / "coverage.csv", index=False)
     cold_rows = [
         {"year": r["year"], "method": r["method"], **spell}
@@ -76,5 +88,5 @@ def write_report(
     for year, frame in predictions.items():
         frame.rename_axis("timestamp_utc").to_parquet(prediction_dir / f"{year}.parquet")
     save_figures(predictions, yearly, metadata["coldest_year"], output / "figures",
-                 metadata["resolution"], metadata["units"])
+                 metadata["resolution"], metadata["units"], external_years)
     return payload

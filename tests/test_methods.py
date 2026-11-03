@@ -62,8 +62,9 @@ def test_sklearn_boosting_day_split_and_prediction(monkeypatch):
     assert 1 <= method.metadata["best_iteration"] <= 20
 
 
-def test_external_profile_missing_timestamps_fail():
+def test_external_profile_leaves_uncovered_intervals_missing():
     index = pd.date_range("2020-01-01", periods=48, freq="h", tz="UTC")
     method = ExternalProfile(pd.Series(10.0, index=index[:-1]))
-    with pytest.raises(ValueError, match="missing 1"):
-        method.predict(pd.DataFrame(index=index), 1000)
+    result = method.predict(pd.DataFrame(index=index), 1000)
+    assert result.index.equals(index)
+    assert result.isna().sum() == 1

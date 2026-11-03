@@ -63,6 +63,20 @@ def aggregate_days(series: pd.Series | pd.DataFrame, timezone: str, start_hour: 
     return result
 
 
+def sum_complete_days(series: pd.Series, timezone: str, start_hour: int) -> pd.Series:
+    """Energy per local day window from (sub)hourly power; days missing any hour are dropped."""
+    hourly = hourly_means(series)
+    labels = day_labels(hourly.index, timezone, start_hour)
+    counts = hourly.notna().groupby(labels).sum()
+    totals = hourly.groupby(labels).sum(min_count=1)
+    starts = (totals.index + pd.Timedelta(hours=start_hour)).tz_localize(timezone)
+    ends = pd.DatetimeIndex([(t.tz_localize(None) + pd.DateOffset(days=1)).tz_localize(timezone) for t in starts])
+    # DST days hold 23 or 25 hours, so sum energy instead of averaging power.
+    expected = ((ends - starts) / pd.Timedelta(hours=1)).to_numpy()
+    totals.index = starts.tz_convert("UTC")
+    return totals.loc[counts.to_numpy() == expected]
+
+
 def align_data(
     demand: pd.Series, weather: pd.DataFrame, years: list[int],
     *, resolution: str = "auto", timezone: str = "Europe/Amsterdam",

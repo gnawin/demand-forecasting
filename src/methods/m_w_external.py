@@ -13,7 +13,5 @@ class ExternalProfile(Method):
         pass
 
     def predict(self, heldout_features: pd.DataFrame, annual_total: float) -> pd.Series:
-        result = self.profile.reindex(heldout_features.index)
-        if result.isna().any():
-            raise ValueError(f"A*: external profile is missing {result.isna().sum()} held-out intervals.")
-        return result.rename(self.name)
+        # Uncovered intervals stay NaN; the driver removes them from every method's support.
+        return self.profile.reindex(heldout_features.index).rename(self.name)
